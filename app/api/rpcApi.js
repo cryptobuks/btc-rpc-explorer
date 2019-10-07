@@ -1,4 +1,6 @@
-var debug = require('debug')('btcexp:rpcApi');
+var debug = require('debug');
+
+var debugLog = debug("btcexp:rpc");
 
 var async = require("async");
 
@@ -10,13 +12,13 @@ var activeQueueTasks = 0;
 
 var rpcQueue = async.queue(function(task, callback) {
 	activeQueueTasks++;
-	//console.log("activeQueueTasks: " + activeQueueTasks);
+	//debugLog("activeQueueTasks: " + activeQueueTasks);
 
 	task.rpcCall(function() {
 		callback();
 
 		activeQueueTasks--;
-		//console.log("activeQueueTasks: " + activeQueueTasks);
+		//debugLog("activeQueueTasks: " + activeQueueTasks);
 	});
 
 }, config.rpcConcurrency);
@@ -51,8 +53,53 @@ function getPeerInfo() {
 	return getRpcData("getpeerinfo");
 }
 
+function getMempoolTxids() {
+	return getRpcDataWithParams({method:"getrawmempool", parameters:[false]});
+}
+
 function getRawMempool() {
-	return getRpcDataWithParams({method:"getrawmempool", parameters:[true]});
+	return new Promise(function(resolve, reject) {
+		getRpcDataWithParams({method:"getrawmempool", parameters:[false]}).then(function(txids) {
+			var promises = [];
+
+			for (var i = 0; i < txids.length; i++) {
+				var txid = txids[i];
+
+				promises.push(getRawMempoolEntry(txid));
+			}
+
+			Promise.all(promises).then(function(results) {
+				var finalResult = {};
+
+				for (var i = 0; i < results.length; i++) {
+					if (results[i] != null) {
+						finalResult[results[i].txid] = results[i];
+					}
+				}
+
+				resolve(finalResult);
+
+			}).catch(function(err) {
+				reject(err);
+			});
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	});
+}
+
+function getRawMempoolEntry(txid) {
+	return new Promise(function(resolve, reject) {
+		getRpcDataWithParams({method:"getmempoolentry", parameters:[txid]}).then(function(result) {
+			result.txid = txid;
+
+			resolve(result);
+
+		}).catch(function(err) {
+			resolve(null);
+		});
+	});
 }
 
 function getChainTxStats(blockCount) {
@@ -75,7 +122,7 @@ function getBlockByHeight(blockHeight) {
 }
 
 function getBlockByHash(blockHash) {
-	debug("getBlockByHash: %s", blockHash);
+	debugLog("getBlockByHash: %s", blockHash);
 
 	return new Promise(function(resolve, reject) {
 		getRpcDataWithParams({method:"getblock", parameters:[blockHash]}).then(function(block) {
@@ -100,7 +147,7 @@ function getAddress(address) {
 }
 
 function getRawTransaction(txid) {
-	debug("getRawTransaction: %s", txid);
+	debugLog("getRawTransaction: %s", txid);
 
 	return new Promise(function(resolve, reject) {
 		if (coins[config.coin].genesisCoinbaseTransactionId && txid == coins[config.coin].genesisCoinbaseTransactionId) {
@@ -132,6 +179,81 @@ function getRawTransaction(txid) {
 	});
 }
 
+function getUtxo(txid, outputIndex) {
+	debugLog("getUtxo: %s (%d)", txid, outputIndex);
+
+	return new Promise(function(resolve, reject) {
+		getRpcDataWithParams({method:"gettxout", parameters:[txid, outputIndex]}).then(function(result) {
+			if (result == null) {
+				resolve("0");
+
+				return;
+			}
+
+			if (result.code && result.code < 0) {
+				reject(result);
+
+				return;
+			}
+
+			resolve(result);
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	});
+}
+
+function getMempoolTxDetails(txid) {
+	debugLog("getMempoolTxDetails: %s", txid);
+
+	var promises = [];
+
+	var mempoolDetails = {};
+
+	promises.push(new Promise(function(resolve, reject) {
+		getRpcDataWithParams({method:"getmempoolentry", parameters:[txid]}).then(function(result) {
+			mempoolDetails.entry = result;
+
+			resolve();
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	}));
+
+	promises.push(new Promise(function(resolve, reject) {
+		getRpcDataWithParams({method:"getmempoolancestors", parameters:[txid]}).then(function(result) {
+			mempoolDetails.ancestors = result;
+
+			resolve();
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	}));
+
+	promises.push(new Promise(function(resolve, reject) {
+		getRpcDataWithParams({method:"getmempooldescendants", parameters:[txid]}).then(function(result) {
+			mempoolDetails.descendants = result;
+
+			resolve();
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	}));
+
+	return new Promise(function(resolve, reject) {
+		Promise.all(promises).then(function() {
+			resolve(mempoolDetails);
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	});
+}
+
 function getHelp() {
 	return getRpcData("help");
 }
@@ -144,12 +266,12 @@ function getRpcMethodHelp(methodName) {
 
 function getRpcData(cmd) {
 	return new Promise(function(resolve, reject) {
-		debug(`RPC: ${cmd}`);
+		debugLog(`RPC: ${cmd}`);
 
 		rpcCall = function(callback) {
 			client.command(cmd, function(err, result, resHeaders) {
 				if (err) {
-					console.log(`Error for RPC command '${cmd}': ${err}`);
+					utils.logError("32euofeege", err, {cmd:cmd});
 
 					reject(err);
 
@@ -170,12 +292,12 @@ function getRpcData(cmd) {
 
 function getRpcDataWithParams(request) {
 	return new Promise(function(resolve, reject) {
-		debug(`RPC: ${request}`);
+		debugLog(`RPC: ${JSON.stringify(request)}`);
 
 		rpcCall = function(callback) {
 			client.command([request], function(err, result, resHeaders) {
 				if (err != null) {
-					console.log(`Error for RPC command ${JSON.stringify(request)}: ${err}, headers=${resHeaders}`);
+					utils.logError("38eh39hdee", err, {result:result, headers:resHeaders});
 
 					reject(err);
 
@@ -200,10 +322,13 @@ module.exports = {
 	getNetworkInfo: getNetworkInfo,
 	getNetTotals: getNetTotals,
 	getMempoolInfo: getMempoolInfo,
+	getMempoolTxids: getMempoolTxids,
 	getMiningInfo: getMiningInfo,
 	getBlockByHeight: getBlockByHeight,
 	getBlockByHash: getBlockByHash,
 	getRawTransaction: getRawTransaction,
+	getUtxo: getUtxo,
+	getMempoolTxDetails: getMempoolTxDetails,
 	getRawMempool: getRawMempool,
 	getUptimeSeconds: getUptimeSeconds,
 	getHelp: getHelp,

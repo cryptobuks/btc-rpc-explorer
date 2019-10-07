@@ -1,4 +1,6 @@
-var debug = require("debug")("btcexp:coreApi");
+var debug = require("debug");
+
+var debugLog = debug("btcexp:core");
 
 var LRU = require("lru-cache");
 var fs = require('fs');
@@ -7,6 +9,7 @@ var utils = require("../utils.js");
 var config = require("../config.js");
 var coins = require("../coins.js");
 var redisCache = require("../redisCache.js");
+var Decimal = require("decimal.js");
 
 // choose one of the below: RPC to a node, or mock data while testing
 var rpcApi = require("./rpcApi.js");
@@ -14,7 +17,7 @@ var rpcApi = require("./rpcApi.js");
 
 
 function onCacheEvent(cacheType, hitOrMiss, cacheKey) {
-	//console.log(`cache.${cacheType}.${hitOrMiss}: ${cacheKey}`);
+	//debugLog(`cache.${cacheType}.${hitOrMiss}: ${cacheKey}`);
 }
 
 function createMemoryLruCache(cacheObj) {
@@ -56,9 +59,9 @@ if (config.noInmemoryRpcCache) {
 	txCache = noopCache;
 
 } else {
-	miscCache = createMemoryLruCache(LRU(50));
-	blockCache = createMemoryLruCache(LRU(50));
-	txCache = createMemoryLruCache(LRU(200));
+	miscCache = createMemoryLruCache(new LRU(50));
+	blockCache = createMemoryLruCache(new LRU(50));
+	txCache = createMemoryLruCache(new LRU(200));
 }
 
 if (redisCache.active) {
@@ -81,7 +84,7 @@ function getGenesisCoinbaseTransactionId() {
 
 
 function tryCacheThenRpcApi(cache, cacheKey, cacheMaxAge, rpcApiFunction, cacheConditionFunction) {
-	//debug("tryCache: " + cacheKey + ", " + cacheMaxAge);
+	//debugLog("tryCache: " + cacheKey + ", " + cacheMaxAge);
 	if (cacheConditionFunction == null) {
 		cacheConditionFunction = function(obj) {
 			return true;
@@ -115,7 +118,7 @@ function tryCacheThenRpcApi(cache, cacheKey, cacheMaxAge, rpcApiFunction, cacheC
 			finallyFunc();
 			
 		}).catch(function(err) {
-			console.log(`Error nds9fc2eg621tf3: key=${cacheKey}, err=${err}`);
+			utils.logError("nds9fc2eg621tf3", err, {cacheKey:cacheKey});
 
 			finallyFunc();
 		});
@@ -123,6 +126,10 @@ function tryCacheThenRpcApi(cache, cacheKey, cacheMaxAge, rpcApiFunction, cacheC
 }
 
 function shouldCacheTransaction(tx) {
+	if (!tx.confirmations) {
+		return false;
+	}
+	
 	if (tx.confirmations < 1) {
 		return false;
 	}
@@ -317,15 +324,11 @@ function getPeerSummary() {
 
 function getMempoolDetails(start, count) {
 	return new Promise(function(resolve, reject) {
-		tryCacheThenRpcApi(miscCache, "getRawMempool", 1000, rpcApi.getRawMempool).then(function(result) {
+		tryCacheThenRpcApi(miscCache, "getMempoolTxids", 1000, rpcApi.getMempoolTxids).then(function(resultTxids) {
 			var txids = [];
-			var txidIndex = 0;
-			for (var txid in result) {
-				if (txidIndex >= start && (txidIndex < (start + count)))  {
-					txids.push(txid);
-				}
 
-				txidIndex++;
+			for (var i = start; (i < resultTxids.length && i < (start + count)); i++) {
+				txids.push(resultTxids[i]);
 			}
 
 			getRawTransactions(txids).then(function(transactions) {
@@ -363,7 +366,8 @@ function getMempoolDetails(start, count) {
 						}
 					});
 
-					resolve({ txCount:txidIndex, transactions:transactions, txInputsByTransaction:txInputsByTransaction });
+					resolve({ txCount:resultTxids.length, transactions:transactions, txInputsByTransaction:txInputsByTransaction });
+
 				}).catch(function(err) {
 					reject(err);
 				});
@@ -458,8 +462,20 @@ function getMempoolStats() {
 			var sizeBucketLabels = [];
 
 			for (var i = 0; i < ageBucketCount; i++) {
+				var rangeMin = i * maxAge / ageBucketCount;
+				var rangeMax = (i + 1) * maxAge / ageBucketCount;
+
 				ageBucketTxCounts.push(0);
-				ageBucketLabels.push(parseInt(i * maxAge / ageBucketCount) + " - " + parseInt((i + 1) * maxAge / ageBucketCount));
+
+				if (maxAge > 600) {
+					var rangeMinutesMin = new Decimal(rangeMin / 60).toFixed(1);
+					var rangeMinutesMax = new Decimal(rangeMax / 60).toFixed(1);
+
+					ageBucketLabels.push(rangeMinutesMin + " - " + rangeMinutesMax + " min");
+
+				} else {
+					ageBucketLabels.push(parseInt(rangeMin) + " - " + parseInt(rangeMax) + " sec");
+				}
 			}
 
 			for (var i = 0; i < sizeBucketCount; i++) {
@@ -537,10 +553,10 @@ function getMempoolStats() {
 				summary["satoshiPerByteBucketTotalFees"].push(summary["satoshiPerByteBuckets"][i]["totalFees"]);
 			}
 
-			/*debug(JSON.stringify(ageBuckets));
-			debug(JSON.stringify(ageBucketLabels));
-			debug(JSON.stringify(sizeBuckets));
-			debug(JSON.stringify(sizeBucketLabels));*/
+			/*debugLog(JSON.stringify(ageBuckets));
+			debugLog(JSON.stringify(ageBucketLabels));
+			debugLog(JSON.stringify(sizeBuckets));
+			debugLog(JSON.stringify(sizeBucketLabels));*/
 
 			resolve(summary);
 
@@ -586,7 +602,13 @@ function getBlocksByHash(blockHashes) {
 		}
 
 		Promise.all(promises).then(function(results) {
-			resolve(results);
+			var result = {};
+
+			results.forEach(function(item) {
+				result[item.hash] = item;
+			});
+
+			resolve(result);
 
 		}).catch(function(err) {
 			reject(err);
@@ -600,6 +622,50 @@ function getRawTransaction(txid) {
 	};
 
 	return tryCacheThenRpcApi(txCache, "getRawTransaction-" + txid, 3600000, rpcApiFunction, shouldCacheTransaction);
+}
+
+function getTxUtxos(tx) {
+	return new Promise(function(resolve, reject) {
+		var promises = [];
+
+		for (var i = 0; i < tx.vout.length; i++) {
+			promises.push(getUtxo(tx.txid, i));
+		}
+
+		Promise.all(promises).then(function(results) {
+			resolve(results);
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	});
+}
+
+function getUtxo(txid, outputIndex) {
+	return new Promise(function(resolve, reject) {
+		tryCacheThenRpcApi(miscCache, "utxo-" + txid + "-" + outputIndex, 3600000, function() {
+			return rpcApi.getUtxo(txid, outputIndex);
+
+		}).then(function(result) {
+			// to avoid cache misses, rpcApi.getUtxo returns "0" instead of null
+			if (result == "0") {
+				resolve(null);
+
+				return;
+			}
+
+			resolve(result);
+
+		}).catch(function(err) {
+			reject(err);
+		});
+	});
+}
+
+function getMempoolTxDetails(txid) {
+	return tryCacheThenRpcApi(miscCache, "mempoolTxDetails-" + txid, 3600000, function() {
+		return rpcApi.getMempoolTxDetails(txid);
+	});
 }
 
 function getAddress(address) {
@@ -874,10 +940,13 @@ module.exports = {
 	getBlockByHeight: getBlockByHeight,
 	getBlocksByHeight: getBlocksByHeight,
 	getBlockByHash: getBlockByHash,
+	getBlocksByHash: getBlocksByHash,
 	getBlockByHashWithTransactions: getBlockByHashWithTransactions,
 	getRawTransaction: getRawTransaction,
 	getRawTransactions: getRawTransactions,
 	getRawTransactionsWithInputs: getRawTransactionsWithInputs,
+	getTxUtxos: getTxUtxos,
+	getMempoolTxDetails: getMempoolTxDetails,
 	getMempoolStats: getMempoolStats,
 	getUptimeSeconds: getUptimeSeconds,
 	getHelp: getHelp,

@@ -1,3 +1,8 @@
+var debug = require("debug");
+
+var debugLog = debug("btcexp:utils");
+var debugErrorLog = debug("btcexp:error");
+
 var Decimal = require("decimal.js");
 var request = require("request");
 var qrcode = require("qrcode");
@@ -149,9 +154,9 @@ function formatCurrencyAmountWithForcedDecimalPlaces(amount, formatType, forcedD
 		var dec = new Decimal(amount);
 
 		var decimalPlaces = formatInfo.decimalPlaces;
-		if (decimalPlaces == 0 && dec < 1) {
-			decimalPlaces = 5;
-		}
+		//if (decimalPlaces == 0 && dec < 1) {
+		//	decimalPlaces = 5;
+		//}
 
 		if (forcedDecimalPlaces >= 0) {
 			decimalPlaces = forcedDecimalPlaces;
@@ -166,7 +171,10 @@ function formatCurrencyAmountWithForcedDecimalPlaces(amount, formatType, forcedD
 			if (global.exchangeRates != null && global.exchangeRates[formatInfo.multiplier] != null) {
 				dec = dec.times(global.exchangeRates[formatInfo.multiplier]);
 
-				return formatInfo.symbol + addThousandsSeparators(dec.toDecimalPlaces(decimalPlaces));
+				return addThousandsSeparators(dec.toDecimalPlaces(decimalPlaces)) + " " + formatInfo.name;
+
+			} else {
+				return formatCurrencyAmountWithForcedDecimalPlaces(amount, coinConfig.defaultCurrencyUnit.name, forcedDecimalPlaces);
 			}
 		}
 	}
@@ -194,8 +202,9 @@ function formatExchangedCurrency(amount, exchangeType) {
 	if (global.exchangeRates != null && global.exchangeRates[exchangeType.toLowerCase()] != null) {
 		var dec = new Decimal(amount);
 		dec = dec.times(global.exchangeRates[exchangeType.toLowerCase()]);
+		var exchangedAmt = parseFloat(Math.round(dec * 100) / 100).toFixed(2);
 
-		return "$" + addThousandsSeparators(dec.toDecimalPlaces(2));
+		return "$" + addThousandsSeparators(exchangedAmt);
 	}
 
 	return "";
@@ -211,25 +220,12 @@ function seededRandomIntBetween(seed, min, max) {
 	return (min + (max - min) * rand);
 }
 
-function logAppStats() {
-	if (global.influxdb) {
-		var points = [];
+function ellipsize(str, length) {
+	if (str.length <= length) {
+		return str;
 
-		points.push({
-			measurement:`app.memory_usage`,
-			tags:{app:("btc-rpc-explorer." + global.config.coin)},
-			fields:process.memoryUsage()
-		});
-
-		points.push({
-			measurement:`app.uptime`,
-			tags:{app:("btc-rpc-explorer." + global.config.coin)},
-			fields:{value:Math.floor(process.uptime())}
-		});
-
-		global.influxdb.writePoints(points).catch(err => {
-			console.error(`Error saving data to InfluxDB: ${err.stack}`);
-		});
+	} else {
+		return str.substring(0, length - 3) + "...";
 	}
 }
 
@@ -240,7 +236,7 @@ function logMemoryUsage() {
 	var mbTotal = process.memoryUsage().heapTotal / 1024 / 1024;
 	mbTotal = Math.round(mbTotal * 100) / 100;
 
-	//console.log("memoryUsage: heapUsed=" + mbUsed + ", heapTotal=" + mbTotal + ", ratio=" + parseInt(mbUsed / mbTotal * 100));
+	//debugLog("memoryUsage: heapUsed=" + mbUsed + ", heapTotal=" + mbTotal + ", ratio=" + parseInt(mbUsed / mbTotal * 100));
 }
 
 function getMinerFromCoinbaseTx(tx) {
@@ -300,7 +296,7 @@ function getTxTotalInputOutputValues(tx, txInputs, blockHeight) {
 							totalInputValue = totalInputValue.plus(new Decimal(vout.value));
 						}
 					} catch (err) {
-						console.log("Error getting tx.totalInputValue: err=" + err + ", txid=" + tx.txid + ", index=tx.vin[" + i + "]");
+						logError("2397gs0gsse", err, {txid:tx.txid, vinIndex:i});
 					}
 				}
 			}
@@ -310,7 +306,7 @@ function getTxTotalInputOutputValues(tx, txInputs, blockHeight) {
 			totalOutputValue = totalOutputValue.plus(new Decimal(tx.vout[i].value));
 		}
 	} catch (err) {
-		console.log("Error computing total input/output values for tx: err=" + err + ", tx=" + JSON.stringify(tx) + ", txInputs=" + JSON.stringify(txInputs) + ", blockHeight=" + blockHeight);
+		logError("2308sh0sg44", err, {tx:tx, txInputs:txInputs, blockHeight:blockHeight});
 	}
 
 	return {input:totalInputValue, output:totalOutputValue};
@@ -349,29 +345,13 @@ function refreshExchangeRates() {
 					global.exchangeRates = exchangeRates;
 					global.exchangeRatesUpdateTime = new Date();
 
-					if (global.influxdb) {
-						var points = [];
-						for (var key in exchangeRates) {
-							points.push({
-								measurement: `exchange_rates.${coins[config.coin].ticker.toLowerCase()}_${key.toLowerCase()}`,
-								fields:{value:parseFloat(exchangeRates[key])}
-							});
-						}
-
-						//console.log("pts: " + JSON.stringify(points));
-
-						global.influxdb.writePoints(points).catch(err => {
-							console.error(`Error saving data to InfluxDB: ${err.stack}`)
-						});
-					}
-
-					console.log("Using exchange rates: " + JSON.stringify(global.exchangeRates) + " starting at " + global.exchangeRatesUpdateTime);
+					debugLog("Using exchange rates: " + JSON.stringify(global.exchangeRates) + " starting at " + global.exchangeRatesUpdateTime);
 
 				} else {
-					console.log("Unable to get exchange rate data");
+					debugLog("Unable to get exchange rate data");
 				}
 			} else {
-				console.log(`Error 39r7h2390fgewfgds: ${error}, StatusCode: ${(response != null) ? response.statusCode : ""}, Response: ${JSON.stringify(response)}`);
+				logError("39r7h2390fgewfgds", {error:error, response:response, body:body});
 			}
 		});
 	}
@@ -380,7 +360,7 @@ function refreshExchangeRates() {
 // Uses ipstack.com API
 function geoLocateIpAddresses(ipAddresses, provider) {
 	return new Promise(function(resolve, reject) {
-		if (config.privacyMode) {
+		if (config.privacyMode || config.ipStackComApiAccessKey === undefined) {
 			resolve({});
 
 			return;
@@ -397,7 +377,7 @@ function geoLocateIpAddresses(ipAddresses, provider) {
 					if (result.value == null) {
 						var apiUrl = "http://api.ipstack.com/" + result.key + "?access_key=" + config.credentials.ipStackComApiAccessKey;
 						
-						console.log("Requesting IP-geo: " + apiUrl);
+						debugLog("Requesting IP-geo: " + apiUrl);
 
 						request(apiUrl, function(error, response, body) {
 							if (error) {
@@ -435,7 +415,7 @@ function geoLocateIpAddresses(ipAddresses, provider) {
 			resolve(ipDetails);
 
 		}).catch(function(err) {
-			console.log("Error 80342hrf78wgehdf07gds: " + err);
+			logError("80342hrf78wgehdf07gds", err);
 
 			reject(err);
 		});
@@ -503,8 +483,33 @@ function colorHexToHsl(hex) {
 	return rgbToHsl(rgb.r, rgb.g, rgb.b);
 }
 
+
+// https://stackoverflow.com/a/31424853/673828
+const reflectPromise = p => p.then(v => ({v, status: "resolved" }),
+                            e => ({e, status: "rejected" }));
+
 function logError(errorId, err, optionalUserData = null) {
-	console.log("Error " + errorId + ": " + err + ", json: " + JSON.stringify(err) + (optionalUserData != null ? (", userData: " + optionalUserData) : ""));
+	if (!global.errorLog) {
+		global.errorLog = [];
+	}
+
+	global.errorLog.push({errorId:errorId, error:err, userData:optionalUserData, date:new Date()});
+	while (global.errorLog.length > 100) {
+		global.errorLog.splice(0, 1);
+	}
+
+	debugErrorLog("Error " + errorId + ": " + err + ", json: " + JSON.stringify(err) + (optionalUserData != null ? (", userData: " + optionalUserData + " (json: " + JSON.stringify(optionalUserData) + ")") : ""));
+	
+	if (err && err.stack) {
+		debugErrorLog("Stack: " + err.stack);
+	}
+
+	var returnVal = {errorId:errorId, error:err};
+	if (optionalUserData) {
+		returnVal.userData = optionalUserData;
+	}
+
+	return returnVal;
 }
 
 function buildQrCodeUrls(strings) {
@@ -536,7 +541,7 @@ function buildQrCodeUrl(str, results) {
 	return new Promise(function(resolve, reject) {
 		qrcode.toDataURL(str, function(err, url) {
 			if (err) {
-				utils.logError("2q3ur8fhudshfs", err, str);
+				logError("2q3ur8fhudshfs", err, str);
 
 				reject(err);
 
@@ -552,6 +557,7 @@ function buildQrCodeUrl(str, results) {
 
 
 module.exports = {
+	reflectPromise: reflectPromise,
 	redirectToConnectPageIfNeeded: redirectToConnectPageIfNeeded,
 	hex2ascii: hex2ascii,
 	splitArrayIntoChunks: splitArrayIntoChunks,
@@ -564,7 +570,6 @@ module.exports = {
 	formatCurrencyAmountInSmallestUnits: formatCurrencyAmountInSmallestUnits,
 	seededRandom: seededRandom,
 	seededRandomIntBetween: seededRandomIntBetween,
-	logAppStats: logAppStats,
 	logMemoryUsage: logMemoryUsage,
 	getMinerFromCoinbaseTx: getMinerFromCoinbaseTx,
 	getBlockTotalFeesFromCoinbaseTxAndBlockHeight: getBlockTotalFeesFromCoinbaseTxAndBlockHeight,
@@ -577,5 +582,6 @@ module.exports = {
 	colorHexToRgb: colorHexToRgb,
 	colorHexToHsl: colorHexToHsl,
 	logError: logError,
-	buildQrCodeUrls: buildQrCodeUrls
+	buildQrCodeUrls: buildQrCodeUrls,
+	ellipsize: ellipsize
 };

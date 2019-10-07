@@ -17,7 +17,8 @@ const args = require('meow')(`
       -u, --bitcoind-user <user>     username for bitcoind rpc [default: none]
       -w, --bitcoind-pass <pass>     password for bitcoind rpc [default: none]
 
-      -E, --electrumx-servers <..>   comma separated list of electrum servers to use for address queries [default: none]
+      --address-api <option>         api to use for address queries (options: electrumx, blockchain.com, blockchair.com, blockcypher.com) [default: none]
+      -E, --electrumx-servers <..>   comma separated list of electrum servers to use for address queries; only used if --address-api=electrumx [default: none]
 
       --rpc-allowall                 allow all rpc commands [default: false]
       --rpc-blacklist <methods>      comma separated list of rpc commands to block [default: see in config.js]
@@ -30,14 +31,6 @@ const args = require('meow')(`
       --ganalytics-tracking <tid>    tracking id for google analytics [default: disabled]
       --sentry-url <sentry-url>      sentry url [default: disabled]
 
-      --enable-influxdb              enable influxdb for logging network stats [default: false]
-      --influxdb-uri <uri>           connection URI for influxdb (overrides the options below)
-      --influxdb-host <host>         hostname for influxdb [default: 127.0.0.1]
-      --influxdb-port <port>         port for influxdb [default: 8086]
-      --influxdb-user <user>         username for influxdb [default: admin]
-      --influxdb-pass <pass>         password for influxdb [default: admin]
-      --influxdb-dbname <db>         database name for influxdb [default: influxdb]
-
       -e, --node-env <env>           nodejs environment mode [default: production]
       -h, --help                     output usage information
       -v, --version                  output version number
@@ -49,7 +42,6 @@ const args = require('meow')(`
     Or using connection URIs
       $ btc-rpc-explorer -b bitcoin://bob:myPassword@127.0.0.1:18443/
       $ btc-rpc-explorer -b bitcoin://127.0.0.1:18443/?cookie=$HOME/.bitcoin/regtest/.cookie
-      $ btc-rpc-explorer --influxdb-uri influx://bob:myPassword@127.0.0.1:8086/dbName
 
     All options may also be specified as environment variables
       $ BTCEXP_PORT=8080 BTCEXP_BITCOIND_PORT=18443 BTCEXP_BITCOIND_COOKIE=~/.bitcoin/regtest/.cookie btc-rpc-explorer
